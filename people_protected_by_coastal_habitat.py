@@ -131,19 +131,26 @@ def main():
     task_graph = taskgraph.TaskGraph(WORKSPACE_DIR, 4)
     task_graph.add_task()
 
-    LOGGER.debug(pygeoprocessing.get_raster_info(POP_RASTER_PATH))
+    pop_raster_info = pygeoprocessing.get_raster_info(POP_RASTER_PATH)
 
     hab_coverage_task_list = []
     hab_raster_path_list = []
     hab_pop_coverage_raster_list = []
     hab_pop_coverage_task_list = []
-    for hab_key, (hab_raster_path, prot_dist) in HAB_LAYERS.items():
-        hab_raster_info = pygeoprocessing.get_raster_info(
-            hab_raster_path)
-        LOGGER.debug(hab_raster_info)
-        continue
+    for hab_key, (unaligned_hab_raster_path, prot_dist) in HAB_LAYERS.items():
+        hab_raster_path = os.path.join(
+            CHURN_DIR, '%s_aligned%s' % os.path.splitext(os.path.basename(
+                unaligned_hab_raster_path)))
+        warp_task = task_graph.add_task(
+            func=pygeoprocessing.warp_raster,
+            args=(
+                unaligned_hab_raster_path, pop_raster_info['pixel_size'],
+                hab_raster_path, 'max'),
+            kwargs={'target_bb': pop_raster_info['bounding_box']},
+            target_path_list=[hab_raster_path],
+            task_name=f'align {unaligned_hab_raster_path}')
 
-        pixel_size_degree = hab_raster_info['pixel_size'][0]
+        pixel_size_degree = pop_raster_info['pixel_size'][0]
         kernel_raster_path = os.path.join(
             WORKSPACE_DIR, f'{hab_key}_{prot_dist}_kernel.tif')
 
@@ -163,7 +170,7 @@ def main():
                 (hab_raster_path, 1), (kernel_raster_path, 1),
                 hab_mask_cover_raster_path),
             kwargs={'mask_nodata': True},
-            dependent_task_list=[kernel_task],
+            dependent_task_list=[kernel_task, warp_task],
             target_path_list=[hab_mask_cover_raster_path],
             task_name=f'create hab coverage for {hab_key}')
         hab_coverage_task_list.append(hab_coverage_task)
