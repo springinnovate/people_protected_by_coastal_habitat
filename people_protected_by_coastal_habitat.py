@@ -41,7 +41,7 @@ HAB_LAYERS = {
     'mangroves_forest': (
         os.path.join(
             ECOSHARD_DIR,
-            'ipbes-cv_mangrove_md5_0ec85cb51dab3c9ec3215783268111cc.tif'), 2000.0),
+            'ipbes-cv_mangrove_md5_0ec85cb51dab3c9ec3215783268111cc.tif'), 2000.1),
     'saltmarsh_wetland': (
         os.path.join(
             ECOSHARD_DIR,
@@ -79,7 +79,7 @@ def create_flat_radial_convolution_mask(
     mask = None
     stratified_distance = distance_transform * pixel_size_m / sample_pixels
     distance_transform = None
-    in_circle = numpy.where(stratified_distance <= 2000.0, 1.0, 0.0)
+    in_circle = numpy.where(stratified_distance <= radius_meters, 1.0, 0.0)
     stratified_distance = None
     reshaped = in_circle.reshape(
         in_circle.shape[0] // sample_pixels, sample_pixels,
@@ -114,6 +114,14 @@ def _union_op(*mask_arrays):
     return result
 
 
+def _sum_rasters_op(*value_arrays):
+    result = numpy.full(value_arrays[0].shape, -1, dtype=numpy.float32)
+    for value_array in value_arrays:
+        valid_mask = value_array > 0
+        result[valid_mask] += value_array[valid_mask]
+    return result
+
+
 def _mask_op(mask_array, value_array):
     result = numpy.full(value_array.shape, -1, dtype=numpy.float32)
     valid_array = mask_array & (value_array > 0)
@@ -125,7 +133,15 @@ def _sum_raster(raster_path):
     running_sum = 0.0
     for _, block_array in pygeoprocessing.iterblocks((raster_path, 1)):
         running_sum += numpy.sum(block_array[block_array > 0])
+    LOGGER.info(f'running_sum is: {running_sum}')
     return running_sum
+
+
+def _mult_by_scalar_op(value_array, scalar):
+    result = numpy.full(value_array.shape, -1, dtype=numpy.float32)
+    valid_mask = value_array >= 0
+    result[valid_mask] = value_array[valid_mask] * scalar
+    return result
 
 
 def main():
@@ -143,6 +159,8 @@ def main():
         hab_raster_path = os.path.join(
             CHURN_DIR, '%s_aligned%s' % os.path.splitext(os.path.basename(
                 unaligned_hab_raster_path)))
+        # align the habitat to the population using max so we get all the
+        # high to low resolution pixel coverage
         warp_task = task_graph.add_task(
             func=pygeoprocessing.warp_raster,
             args=(
@@ -154,8 +172,10 @@ def main():
 
         pixel_size_degree = pop_raster_info['pixel_size'][0]
         kernel_raster_path = os.path.join(
-            WORKSPACE_DIR, f'{hab_key}_{prot_dist}_kernel.tif')
+            CHURN_DIR, f'{hab_key}_{prot_dist}_kernel.tif')
 
+        # this convolution is a flat disk and picks up partial pixels right
+        # on the edges of the circle
         kernel_task = task_graph.add_task(
             func=create_flat_radial_convolution_mask,
             args=(
@@ -163,7 +183,8 @@ def main():
             target_path_list=[kernel_raster_path],
             task_name=f'make kernel for {hab_key}')
 
-        # project habitat
+        # project habitat coverage out the distance that it should cover
+        # the values don't matter here just the coverage
         hab_mask_cover_raster_path = os.path.join(
             CHURN_DIR, f'{hab_key}_coverage.tif')
         hab_coverage_task = task_graph.add_task(
@@ -180,19 +201,24 @@ def main():
         hab_coverage_task_list.append(hab_coverage_task)
         hab_raster_path_list.append((hab_mask_cover_raster_path, 1))
 
-        # project population
+        # project population out the distance that habitat protects so we
+        # can see where the population will intersect with the habitat
         hab_pop_coverage_raster_path = os.path.join(
-            WORKSPACE_DIR, f'{hab_key}_pop_coverage.tif')
+            CHURN_DIR, f'{hab_key}_pop_coverage.tif')
         pop_coverage_task = task_graph.add_task(
             func=pygeoprocessing.convolve_2d,
             args=(
                 (POP_RASTER_PATH, 1), (kernel_raster_path, 1),
                 hab_pop_coverage_raster_path),
-            kwargs={'mask_nodata': True},
+            kwargs={'mask_nodata': False},
             dependent_task_list=[kernel_task],
             target_path_list=[hab_pop_coverage_raster_path],
             task_name=f'create pop coverage for {hab_key}')
-        # mask projected population to hab
+
+        # mask projected population to hab to see how much population
+        # intersects with habitat, the result will be a hab shaped splotch
+        # where each pixel represents the number of people within protective
+        # distance
         hab_pop_coverage_on_hab_raster_path = os.path.join(
             WORKSPACE_DIR, f'{hab_key}_pop_on_hab.tif')
         mask_pop_task = task_graph.add_task(
@@ -205,8 +231,9 @@ def main():
             task_name=f'mask pop by hab effect layer')
         hab_pop_coverage_task_list.append(mask_pop_task)
         hab_pop_coverage_raster_list.append(
-            hab_pop_coverage_on_hab_raster_path)
+            (hab_pop_coverage_on_hab_raster_path, 1))
 
+    # combine all the hab coverages into one big raster for total coverage
     total_hab_mask_raster_path = os.path.join(
         CHURN_DIR, 'total_hab_mask_coverage.tif')
     total_hab_mask_task = task_graph.add_task(
@@ -218,9 +245,11 @@ def main():
         target_path_list=[total_hab_mask_raster_path],
         task_name='total hab mask coverage')
 
+    # mask the population raster by the total hab coverage, this shows
+    # how many total people are protected by any habitat
     affected_pop_raster_path = os.path.join(
         CHURN_DIR, 'affected_population.tif')
-    mask_pop_task = task_graph.add_task(
+    total_affectd_pop_task = task_graph.add_task(
         func=pygeoprocessing.raster_calculator,
         args=(
             [(total_hab_mask_raster_path, 1), (POP_RASTER_PATH, 1)],
@@ -229,22 +258,49 @@ def main():
         target_path_list=[affected_pop_raster_path],
         task_name=f'mask pop by hab effect layer')
 
+    # sum the protected population
     sum_mask_pop_task = task_graph.add_task(
         func=_sum_raster,
         args=(affected_pop_raster_path,),
-        dependent_task_list=[mask_pop_task],
+        dependent_task_list=[total_affectd_pop_task],
+        store_result=True,
         task_name=f'sum up {affected_pop_raster_path}')
 
-    # total_pop_hab_mask_raster_path = os.path.join(
-    #     CHURN_DIR, 'total_pop_hab_mask_coverage.tif')
-    # total_hab_mask_task = task_graph.add_task(
-    #     func=pygeoprocessing.raster_calculator,
-    #     args=(
-    #         hab_raster_path_list, _union_op, total_hab_mask_raster_path,
-    #         gdal.GDT_Byte, 0),
-    #     dependent_task_list=hab_coverage_task_list,
-    #     target_path_list=[total_hab_mask_raster_path],
-    #     task_name='combined hab mask')
+    # calculate the total number of people protected by each habitat pixel
+    # all together
+    total_pop_hab_mask_raster_path = os.path.join(
+        CHURN_DIR, 'total_pop_hab_mask_coverage.tif')
+    total_pop_hab_mask_task = task_graph.add_task(
+        func=pygeoprocessing.raster_calculator,
+        args=(
+            hab_pop_coverage_raster_list, _sum_rasters_op,
+            total_pop_hab_mask_raster_path, gdal.GDT_Float32, -1),
+        dependent_task_list=hab_coverage_task_list,
+        target_path_list=[total_pop_hab_mask_raster_path],
+        task_name='combined hab mask')
+
+    # sum the protected population
+    sum_hab_mask_pop_task = task_graph.add_task(
+        func=_sum_raster,
+        args=(total_pop_hab_mask_raster_path,),
+        dependent_task_list=[total_pop_hab_mask_task],
+        store_result=True,
+        task_name=f'sum up {total_pop_hab_mask_raster_path}')
+
+    # normalize the total population on habitat by the sum of total people
+    # protected / sum of total pop hab mask layer
+    norm_total_pop_hab_mask_raster_path = os.path.join(
+        CHURN_DIR, 'norm_total_pop_hab_mask_coverage.tif')
+    norm_total_pop_hab_mask_task = task_graph.add_task(
+        func=pygeoprocessing.raster_calculator,
+        args=([
+            (total_pop_hab_mask_task, 1),
+            (sum_mask_pop_task.get()/sum_hab_mask_pop_task.get(), 'raw')],
+            _mult_by_scalar_op, norm_total_pop_hab_mask_raster_path,
+            gdal.GDT_Float32, -1),
+        dependent_task_list=[total_pop_hab_mask_task],
+        target_path_list=[norm_total_pop_hab_mask_raster_path],
+        task_name=f'normalize final pop coverage')
 
     task_graph.join()
     task_graph.close()
