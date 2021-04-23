@@ -25,8 +25,8 @@ logging.basicConfig(
         '%(asctime)s (%(relativeCreated)d) %(processName)s %(levelname)s '
         '%(name)s [%(funcName)s:%(lineno)d] %(message)s'))
 LOGGER = logging.getLogger(__name__)
-logging.getLogger('taskgraph').setLevel(logging.WARN)
-logging.getLogger('pygeoprocessing').setLevel(logging.WARN)
+logging.getLogger('taskgraph').setLevel(logging.INFO)
+logging.getLogger('pygeoprocessing').setLevel(logging.INFO)
 
 
 POP_RASTER_PATH = os.path.join(
@@ -124,13 +124,13 @@ def _mask_op(mask_array, value_array):
 def _sum_raster(raster_path):
     running_sum = 0.0
     for _, block_array in pygeoprocessing.iterblocks((raster_path, 1)):
-        running_sum += block_array[block_array > 0]
+        running_sum += numpy.sum(block_array[block_array > 0])
     return running_sum
 
 
 def main():
     """Entry point."""
-    task_graph = taskgraph.TaskGraph(WORKSPACE_DIR, 4)
+    task_graph = taskgraph.TaskGraph(WORKSPACE_DIR, 4, 5.0)
     task_graph.add_task()
 
     pop_raster_info = pygeoprocessing.get_raster_info(POP_RASTER_PATH)
