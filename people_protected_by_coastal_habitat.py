@@ -9,6 +9,8 @@ import numpy
 import scipy
 import taskgraph
 
+gdal.SetCacheMax(2**27)
+
 WORKSPACE_DIR = 'workspace'
 ECOSHARD_DIR = os.path.join(WORKSPACE_DIR, 'ecoshard')
 CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
@@ -108,12 +110,12 @@ def create_flat_radial_convolution_mask(
 def _union_op(*mask_arrays):
     result = numpy.zeros(mask_arrays[0].shape, dtype=numpy.bool)
     for mask_array in mask_arrays:
-        result |= (mask_arrays > 0) & (~numpy.isclose(mask_array, 0))
+        result |= (mask_array > 0) & (~numpy.isclose(mask_array, 0))
     return result
 
 
 def _mask_op(mask_array, value_array):
-    result = numpy.fill(value_array.shape, -1, dtype=numpy.float32)
+    result = numpy.full(value_array.shape, -1, dtype=numpy.float32)
     valid_array = mask_array & (value_array > 0)
     result[valid_array] = value_array[valid_array]
     return result
