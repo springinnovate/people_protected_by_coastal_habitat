@@ -199,7 +199,7 @@ def main():
             target_path_list=[hab_mask_cover_raster_path],
             task_name=f'create hab coverage for {hab_key}')
         hab_coverage_task_list.append(hab_coverage_task)
-        hab_raster_path_list.append((hab_mask_cover_raster_path, 1))
+        hab_raster_path_list.append((hab_raster_path, 1))
 
         # project population out the distance that habitat protects so we
         # can see where the population will intersect with the habitat
@@ -228,10 +228,10 @@ def main():
                 _mask_op, hab_pop_coverage_on_hab_raster_path, gdal.GDT_Float32, -1),
             dependent_task_list=[pop_coverage_task],
             target_path_list=[hab_pop_coverage_on_hab_raster_path],
-            task_name=f'mask pop by hab effect layer')
-        hab_pop_coverage_task_list.append(mask_pop_task)
+            task_name=f'mask pop by hab effect layer {hab_key}')
+        hab_pop_coverage_task_list.append(pop_coverage_task)
         hab_pop_coverage_raster_list.append(
-            (hab_pop_coverage_on_hab_raster_path, 1))
+            (hab_pop_coverage_raster_path, 1))
 
     # combine all the hab coverages into one big raster for total coverage
     total_hab_mask_raster_path = os.path.join(
@@ -268,16 +268,28 @@ def main():
 
     # calculate the total number of people protected by each habitat pixel
     # all together
+    total_pop_coverage_raster_path = os.path.join(
+        CHURN_DIR, 'total_pop_coverage.tif')
+    total_pop_coverage_mask_task = task_graph.add_task(
+        func=pygeoprocessing.raster_calculator,
+        args=(
+            hab_pop_coverage_raster_list, _sum_rasters_op,
+            total_pop_coverage_raster_path, gdal.GDT_Float32, -1),
+        dependent_task_list=hab_coverage_task_list,
+        target_path_list=[total_pop_coverage_raster_path],
+        task_name='combined population coverage')
+
     total_pop_hab_mask_raster_path = os.path.join(
         CHURN_DIR, 'total_pop_hab_mask_coverage.tif')
     total_pop_hab_mask_task = task_graph.add_task(
         func=pygeoprocessing.raster_calculator,
         args=(
-            hab_pop_coverage_raster_list, _sum_rasters_op,
+            [(total_hab_mask_raster_path, 1),
+             (total_pop_coverage_raster_path, 1)], _mask_op,
             total_pop_hab_mask_raster_path, gdal.GDT_Float32, -1),
-        dependent_task_list=hab_coverage_task_list,
+        dependent_task_list=[total_pop_coverage_mask_task],
         target_path_list=[total_pop_hab_mask_raster_path],
-        task_name='combined hab mask')
+        task_name='total pop coverage masked by hab')
 
     # sum the protected population
     sum_hab_mask_pop_task = task_graph.add_task(
@@ -294,7 +306,7 @@ def main():
     norm_total_pop_hab_mask_task = task_graph.add_task(
         func=pygeoprocessing.raster_calculator,
         args=([
-            (total_pop_hab_mask_task, 1),
+            (total_pop_hab_mask_raster_path, 1),
             (sum_mask_pop_task.get()/sum_hab_mask_pop_task.get(), 'raw')],
             _mult_by_scalar_op, norm_total_pop_hab_mask_raster_path,
             gdal.GDT_Float32, -1),
