@@ -171,7 +171,9 @@ def main():
             args=(
                 (hab_raster_path, 1), (kernel_raster_path, 1),
                 hab_mask_cover_raster_path),
-            kwargs={'mask_nodata': True},
+            kwargs={
+                'mask_nodata': False,
+                },
             dependent_task_list=[kernel_task, warp_task],
             target_path_list=[hab_mask_cover_raster_path],
             task_name=f'create hab coverage for {hab_key}')
