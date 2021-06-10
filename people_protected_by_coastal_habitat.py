@@ -31,38 +31,71 @@ logging.getLogger('pygeoprocessing').setLevel(logging.INFO)
 
 TARGET_PIXEL_SIZE = (0.002777777778, -0.002777777778)
 
-# Note: all ecoshards are in gs://ecoshard-root/ipbes-cv
+# Note: layers are in ecoshard-root/geobon/cv_layers/2000
+# This is old-fashioned code that requires all the layers below to be in workspace/ecoshard
 
 POP_RASTER_PATH = os.path.join(
     ECOSHARD_DIR,
-    'total_pop_masked_by_10m_md5_ef02b7ee48fa100f877e3a1671564be2.tif')
+    'total_pop_masked_by_10m_2000_md5_a8be07ed5e2afefe03a40dddff03e5b5.tif')
 
 HAB_LAYERS = {
     'reefs': (
         os.path.join(
             ECOSHARD_DIR,
-            'reefs_value_md5_42fc7e5155f57102ad22b4e003deb39a.tif'), 2000.0),
+            'reefs_value_md5_b1d862bc42b52ba86c909453bcf1866c.tif'), 2000.0),
     'mangroves_forest': (
         os.path.join(
             ECOSHARD_DIR,
-            'mangroves_forest_value_md5_d53754de7dd71cc12ab2c93937d900b0.tif'), 2000.1),
+            'mangroves_forest_value_md5_c7309d791ee715e88eacc9ff64376817.tif'), 2000.1),
     'saltmarsh_wetland': (
         os.path.join(
             ECOSHARD_DIR,
-            'saltmarsh_wetland_value_md5_73c36d6f95cdc6227c79ce258140e452.tif'), 1000.0),
+            'saltmarsh_wetland_value_md5_f2488a6a777703b19a0e94fe419d96da.tif'), 1000.0),
     'seagrass': (
         os.path.join(
             ECOSHARD_DIR,
-            'seagrass_value_md5_aa481f29c036e404184795e78c90afd9.tif'), 500.0),
+            'seagrass_value_md5_3164c8092495286303bc74e9f90d7e99.tif'), 500.0),
     'shrub': (
         os.path.join(
             ECOSHARD_DIR,
-            '2_2000_value_md5_3a2650575183a61ac1f2e9b8d7d1da1d.tif'), 2000.01),
+            '2_2000_value_md5_fc455be508bb5d96ca35cc86cd8efda8.tif'), 2000.01),
     'sparse': (
         os.path.join(
             ECOSHARD_DIR,
-            '4_500_value_md5_09b7566d15ffaab23ce7bd86bafc0ccf.tif'), 500.01),
+            '4_500_value_md5_311d14db442bea0764915533fffc89f9.tif'), 500.01),
 }
+
+#this was for year esa2015: Note: all ecoshards are in gs://ecoshard-root/ipbes-cv
+#POP_RASTER_PATH = os.path.join(
+#    ECOSHARD_DIR,
+#    'total_pop_masked_by_10m_md5_ef02b7ee48fa100f877e3a1671564be2.tif')
+#
+#HAB_LAYERS = {
+#    'reefs': (
+#        os.path.join(
+#            ECOSHARD_DIR,
+#            'reefs_value_md5_42fc7e5155f57102ad22b4e003deb39a.tif'), 2000.0),
+#    'mangroves_forest': (
+#        os.path.join(
+#            ECOSHARD_DIR,
+#            'mangroves_forest_value_md5_d53754de7dd71cc12ab2c93937d900b0.tif'), 2000.1),
+#    'saltmarsh_wetland': (
+#        os.path.join(
+#            ECOSHARD_DIR,
+#            'saltmarsh_wetland_value_md5_73c36d6f95cdc6227c79ce258140e452.tif'), 1000.0),
+#    'seagrass': (
+#        os.path.join(
+#            ECOSHARD_DIR,
+#            'seagrass_value_md5_aa481f29c036e404184795e78c90afd9.tif'), 500.0),
+#    'shrub': (
+#        os.path.join(
+#            ECOSHARD_DIR,
+#            '2_2000_value_md5_3a2650575183a61ac1f2e9b8d7d1da1d.tif'), 2000.01),
+#    'sparse': (
+#        os.path.join(
+#            ECOSHARD_DIR,
+#            '4_500_value_md5_09b7566d15ffaab23ce7bd86bafc0ccf.tif'), 500.01),
+#}
 
 
 def create_flat_radial_convolution_mask(
