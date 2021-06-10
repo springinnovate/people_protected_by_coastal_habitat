@@ -4,6 +4,7 @@ import os
 
 from osgeo import gdal
 from osgeo import osr
+from pygeoprocessing.geoprocessing import _create_latitude_m2_area_column
 import pygeoprocessing
 import numpy
 import scipy
@@ -40,19 +41,27 @@ HAB_LAYERS = {
     'reefs': (
         os.path.join(
             ECOSHARD_DIR,
-            'ipbes-cv_reef_wgs84_compressed_md5_96d95cc4f2c5348394eccff9e8b84e6b.tif'), 2000.0),
+            'reefs_value_md5_42fc7e5155f57102ad22b4e003deb39a.tif'), 2000.0),
     'mangroves_forest': (
         os.path.join(
             ECOSHARD_DIR,
-            'ipbes-cv_mangrove_md5_0ec85cb51dab3c9ec3215783268111cc.tif'), 2000.1),
+            'mangroves_forest_value_md5_d53754de7dd71cc12ab2c93937d900b0.tif'), 2000.1),
     'saltmarsh_wetland': (
         os.path.join(
             ECOSHARD_DIR,
-            'ipbes-cv_saltmarsh_md5_203d8600fd4b6df91f53f66f2a011bcd.tif'), 1000.0),
+            'saltmarsh_wetland_value_md5_73c36d6f95cdc6227c79ce258140e452.tif'), 1000.0),
     'seagrass': (
         os.path.join(
             ECOSHARD_DIR,
-            'ipbes-cv_seagrass_md5_a9cc6d922d2e74a14f74b4107c94a0d6.tif'), 500.0),
+            'seagrass_value_md5_aa481f29c036e404184795e78c90afd9.tif'), 500.0),
+    'shrub': (
+        os.path.join(
+            ECOSHARD_DIR,
+            '2_2000_value_md5_3a2650575183a61ac1f2e9b8d7d1da1d.tif'), 2000.01),
+    'sparse': (
+        os.path.join(
+            ECOSHARD_DIR,
+            '4_500_value_md5_09b7566d15ffaab23ce7bd86bafc0ccf.tif'), 500.01),
 }
 
 
@@ -155,13 +164,93 @@ def _mult_by_scalar_op(value_array, scalar):
     result[valid_mask] = value_array[valid_mask] * scalar
     return result
 
+def warp_by_area(base_raster_path, target_pixel_size, target_raster_path):
+    #create a density raster
+    density_raster_path = os.path.join(CHURN_DIR, "density.tif")
+    _convert_to_density(base_raster_path, density_raster_path)
+    #warp the density raster to the target pixel size
+    warp_density_raster_path = os.path.join(CHURN_DIR, "warp_density.tif")
+    pygeoprocessing.warp_raster(density_raster_path, target_pixel_size, warp_density_raster_path, "average")
+    #convert it back to a count
+    _density_to_count(warp_density_raster_path, target_raster_path)
+    os.remove(density_raster_path)
+    os.remove(warp_density_raster_path)
+
+def _density_to_count(
+        base_wgs84_density_raster_path, target_wgs84_count_raster_path):
+    """Convert base WGS84 raster path to a per density raster path."""
+    base_raster_info = pygeoprocessing.get_raster_info(
+        base_wgs84_density_raster_path)
+    # xmin, ymin, xmax, ymax
+    _, lat_min, _, lat_max = base_raster_info['bounding_box']
+    _, n_rows = base_raster_info['raster_size']
+
+    m2_area_col = _create_latitude_m2_area_column(lat_min, lat_max, n_rows)
+    nodata = base_raster_info['nodata'][0]
+
+    def _mult_by_area_op(base_array, m2_area_array):
+        result = numpy.empty(base_array.shape, dtype=base_array.dtype)
+        if nodata is not None:
+            valid_mask = ~numpy.isclose(base_array, nodata)
+            result[:] = nodata
+        else:
+            valid_mask = numpy.ones(base_array.shape, dtype=bool)
+
+        result[valid_mask] = (
+            base_array[valid_mask] * m2_area_array[valid_mask])
+        return result
+
+    pygeoprocessing.raster_calculator(
+        [(base_wgs84_density_raster_path, 1), m2_area_col], _mult_by_area_op,
+        target_wgs84_count_raster_path, base_raster_info['datatype'],
+        nodata)
+
+
+def _convert_to_density(
+        base_wgs84_raster_path, target_wgs84_density_raster_path):
+    """Convert base WGS84 raster path to a per density raster path."""
+    base_raster_info = pygeoprocessing.get_raster_info(
+        base_wgs84_raster_path)
+    # xmin, ymin, xmax, ymax
+    _, lat_min, _, lat_max = base_raster_info['bounding_box']
+    _, n_rows = base_raster_info['raster_size']
+
+    m2_area_col = _create_latitude_m2_area_column(lat_min, lat_max, n_rows)
+    nodata = base_raster_info['nodata'][0]
+
+    def _div_by_area_op(base_array, m2_area_array):
+        result = numpy.empty(base_array.shape, dtype=base_array.dtype)
+        if nodata is not None:
+            valid_mask = ~numpy.isclose(base_array, nodata)
+            result[:] = nodata
+        else:
+            valid_mask = numpy.ones(base_array.shape, dtype=bool)
+
+        result[valid_mask] = (
+            base_array[valid_mask] / m2_area_array[valid_mask])
+        return result
+
+    pygeoprocessing.raster_calculator(
+        [(base_wgs84_raster_path, 1), m2_area_col], _div_by_area_op,
+        target_wgs84_density_raster_path, base_raster_info['datatype'],
+        nodata)
+
 
 def main():
     """Entry point."""
     task_graph = taskgraph.TaskGraph(WORKSPACE_DIR, 4, 5.0)
     task_graph.add_task()
+ 
+    pop_aligned_raster_path = os.path.join(CHURN_DIR, "pop_aligned.tif")
 
-    pop_raster_info = pygeoprocessing.get_raster_info(POP_RASTER_PATH)
+    hab_warp_task = task_graph.add_task(
+        func=warp_by_area,
+        args=(
+            POP_RASTER_PATH, TARGET_PIXEL_SIZE, pop_aligned_raster_path),
+        target_path_list=[pop_aligned_raster_path],
+        task_name=f'align and resample {pop_aligned_raster_path}')
+    hab_warp_task.join()
+    pop_raster_info = pygeoprocessing.get_raster_info(pop_aligned_raster_path)
 
     hab_coverage_task_list = []
     hab_raster_path_list = []
@@ -224,7 +313,7 @@ def main():
         pop_coverage_task = task_graph.add_task(
             func=pygeoprocessing.convolve_2d,
             args=(
-                (POP_RASTER_PATH, 1), (kernel_raster_path, 1),
+                (pop_aligned_raster_path, 1), (kernel_raster_path, 1),
                 hab_pop_coverage_raster_path),
             kwargs={'mask_nodata': False},
             dependent_task_list=[kernel_task],
@@ -269,7 +358,7 @@ def main():
     total_affectd_pop_task = task_graph.add_task(
         func=pygeoprocessing.raster_calculator,
         args=(
-            [(total_hab_mask_raster_path, 1), (POP_RASTER_PATH, 1)],
+            [(total_hab_mask_raster_path, 1), (pop_aligned_raster_path, 1)],
             _mask_op, affected_pop_raster_path, gdal.GDT_Float32, -1),
         dependent_task_list=[total_hab_mask_task],
         target_path_list=[affected_pop_raster_path],
