@@ -200,13 +200,7 @@ def _convert_to_density(
 
 def main():
     """Entry point."""
-    parser = argparse.ArgumentParser(description='Global CV analysis')
-    parser.add_argument(
-        'landcover_file',
-        help='Path to file that lists landcover scenarios to run.')
-    parser.add_argument(
-        '--dasgupta_mode', action='store_true',
-        help='Ignore offshore mangrove and saltmarsh')
+    parser = argparse.ArgumentParser(description='People protected by coastal habitat analysis')
     parser.add_argument(
         '--population', type=str, required=True,
         help='path to the population raster')
