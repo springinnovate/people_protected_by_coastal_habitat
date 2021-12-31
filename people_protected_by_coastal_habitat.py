@@ -1,101 +1,29 @@
 """Pipeline to calculate people protected by coastal hab."""
+import argparse
 import logging
 import os
+import multiprocessing
 
 from osgeo import gdal
 from osgeo import osr
-from pygeoprocessing.geoprocessing import _create_latitude_m2_area_column
-import pygeoprocessing
+from ecoshard.geoprocessing.geoprocessing import _create_latitude_m2_area_column
+from ecoshard import geoprocessing
+from ecoshard import taskgraph
 import numpy
 import scipy
-import taskgraph
 
-gdal.SetCacheMax(2**27)
-
-WORKSPACE_DIR = 'workspace'
-ECOSHARD_DIR = os.path.join(WORKSPACE_DIR, 'ecoshard')
-CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
-
-for dir_path in [ECOSHARD_DIR, CHURN_DIR, WORKSPACE_DIR]:
-    os.makedirs(dir_path, exist_ok=True)
+gdal.SetCacheMax(2**26)
 
 logging.basicConfig(
     level=logging.DEBUG,
-    #filename='log.out',
     format=(
         '%(asctime)s (%(relativeCreated)d) %(processName)s %(levelname)s '
         '%(name)s [%(funcName)s:%(lineno)d] %(message)s'))
 LOGGER = logging.getLogger(__name__)
 logging.getLogger('taskgraph').setLevel(logging.INFO)
-logging.getLogger('pygeoprocessing').setLevel(logging.INFO)
+logging.getLogger('ecoshard.geoprocessing').setLevel(logging.INFO)
 
 TARGET_PIXEL_SIZE = (0.002777777778, -0.002777777778)
-
-# Note: layers are in ecoshard-root/geobon/cv_layers/2000
-# This is old-fashioned code that requires all the layers below to be in workspace/ecoshard
-
-POP_RASTER_PATH = os.path.join(
-    ECOSHARD_DIR,
-    'total_pop_masked_by_10m_2000_md5_a8be07ed5e2afefe03a40dddff03e5b5.tif')
-
-HAB_LAYERS = {
-    'reefs': (
-        os.path.join(
-            ECOSHARD_DIR,
-            'reefs_value_md5_b1d862bc42b52ba86c909453bcf1866c.tif'), 2000.0),
-    'mangroves_forest': (
-        os.path.join(
-            ECOSHARD_DIR,
-            'mangroves_forest_value_md5_c7309d791ee715e88eacc9ff64376817.tif'), 2000.1),
-    'saltmarsh_wetland': (
-        os.path.join(
-            ECOSHARD_DIR,
-            'saltmarsh_wetland_value_md5_f2488a6a777703b19a0e94fe419d96da.tif'), 1000.0),
-    'seagrass': (
-        os.path.join(
-            ECOSHARD_DIR,
-            'seagrass_value_md5_3164c8092495286303bc74e9f90d7e99.tif'), 500.0),
-    'shrub': (
-        os.path.join(
-            ECOSHARD_DIR,
-            '2_2000_value_md5_fc455be508bb5d96ca35cc86cd8efda8.tif'), 2000.01),
-    'sparse': (
-        os.path.join(
-            ECOSHARD_DIR,
-            '4_500_value_md5_311d14db442bea0764915533fffc89f9.tif'), 500.01),
-}
-
-#this was for year esa2015: Note: all ecoshards are in gs://ecoshard-root/ipbes-cv
-#POP_RASTER_PATH = os.path.join(
-#    ECOSHARD_DIR,
-#    'total_pop_masked_by_10m_md5_ef02b7ee48fa100f877e3a1671564be2.tif')
-#
-#HAB_LAYERS = {
-#    'reefs': (
-#        os.path.join(
-#            ECOSHARD_DIR,
-#            'reefs_value_md5_42fc7e5155f57102ad22b4e003deb39a.tif'), 2000.0),
-#    'mangroves_forest': (
-#        os.path.join(
-#            ECOSHARD_DIR,
-#            'mangroves_forest_value_md5_d53754de7dd71cc12ab2c93937d900b0.tif'), 2000.1),
-#    'saltmarsh_wetland': (
-#        os.path.join(
-#            ECOSHARD_DIR,
-#            'saltmarsh_wetland_value_md5_73c36d6f95cdc6227c79ce258140e452.tif'), 1000.0),
-#    'seagrass': (
-#        os.path.join(
-#            ECOSHARD_DIR,
-#            'seagrass_value_md5_aa481f29c036e404184795e78c90afd9.tif'), 500.0),
-#    'shrub': (
-#        os.path.join(
-#            ECOSHARD_DIR,
-#            '2_2000_value_md5_3a2650575183a61ac1f2e9b8d7d1da1d.tif'), 2000.01),
-#    'sparse': (
-#        os.path.join(
-#            ECOSHARD_DIR,
-#            '4_500_value_md5_09b7566d15ffaab23ce7bd86bafc0ccf.tif'), 500.01),
-#}
 
 
 def create_flat_radial_convolution_mask(
@@ -185,7 +113,7 @@ def _mask_op(mask_array, value_array):
 
 def _sum_raster(raster_path):
     running_sum = 0.0
-    for _, block_array in pygeoprocessing.iterblocks((raster_path, 1)):
+    for _, block_array in geoprocessing.iterblocks((raster_path, 1)):
         running_sum += numpy.sum(block_array[block_array > 0])
     LOGGER.info(f'running_sum is: {running_sum}')
     return running_sum
@@ -197,14 +125,15 @@ def _mult_by_scalar_op(value_array, scalar):
     result[valid_mask] = value_array[valid_mask] * scalar
     return result
 
-def warp_by_area(base_raster_path, target_pixel_size, target_raster_path):
-    #create a density raster
-    density_raster_path = os.path.join(CHURN_DIR, "density.tif")
+
+def warp_by_area(churn_dir, base_raster_path, target_pixel_size, target_raster_path):
+    """Warp a raster but scale values by per-pixel area change."""
+    density_raster_path = os.path.join(churn_dir, "density.tif")
     _convert_to_density(base_raster_path, density_raster_path)
-    #warp the density raster to the target pixel size
-    warp_density_raster_path = os.path.join(CHURN_DIR, "warp_density.tif")
-    pygeoprocessing.warp_raster(density_raster_path, target_pixel_size, warp_density_raster_path, "average")
-    #convert it back to a count
+    warp_density_raster_path = os.path.join(churn_dir, "warp_density.tif")
+    geoprocessing.warp_raster(
+        density_raster_path, target_pixel_size, warp_density_raster_path,
+        "average")
     _density_to_count(warp_density_raster_path, target_raster_path)
     os.remove(density_raster_path)
     os.remove(warp_density_raster_path)
@@ -212,7 +141,7 @@ def warp_by_area(base_raster_path, target_pixel_size, target_raster_path):
 def _density_to_count(
         base_wgs84_density_raster_path, target_wgs84_count_raster_path):
     """Convert base WGS84 raster path to a per density raster path."""
-    base_raster_info = pygeoprocessing.get_raster_info(
+    base_raster_info = geoprocessing.get_raster_info(
         base_wgs84_density_raster_path)
     # xmin, ymin, xmax, ymax
     _, lat_min, _, lat_max = base_raster_info['bounding_box']
@@ -233,7 +162,7 @@ def _density_to_count(
             base_array[valid_mask] * m2_area_array[valid_mask])
         return result
 
-    pygeoprocessing.raster_calculator(
+    geoprocessing.raster_calculator(
         [(base_wgs84_density_raster_path, 1), m2_area_col], _mult_by_area_op,
         target_wgs84_count_raster_path, base_raster_info['datatype'],
         nodata)
@@ -242,7 +171,7 @@ def _density_to_count(
 def _convert_to_density(
         base_wgs84_raster_path, target_wgs84_density_raster_path):
     """Convert base WGS84 raster path to a per density raster path."""
-    base_raster_info = pygeoprocessing.get_raster_info(
+    base_raster_info = geoprocessing.get_raster_info(
         base_wgs84_raster_path)
     # xmin, ymin, xmax, ymax
     _, lat_min, _, lat_max = base_raster_info['bounding_box']
@@ -263,7 +192,7 @@ def _convert_to_density(
             base_array[valid_mask] / m2_area_array[valid_mask])
         return result
 
-    pygeoprocessing.raster_calculator(
+    geoprocessing.raster_calculator(
         [(base_wgs84_raster_path, 1), m2_area_col], _div_by_area_op,
         target_wgs84_density_raster_path, base_raster_info['datatype'],
         nodata)
@@ -271,19 +200,69 @@ def _convert_to_density(
 
 def main():
     """Entry point."""
-    task_graph = taskgraph.TaskGraph(WORKSPACE_DIR, 4, 5.0)
+    parser = argparse.ArgumentParser(description='Global CV analysis')
+    parser.add_argument(
+        'landcover_file',
+        help='Path to file that lists landcover scenarios to run.')
+    parser.add_argument(
+        '--dasgupta_mode', action='store_true',
+        help='Ignore offshore mangrove and saltmarsh')
+    parser.add_argument(
+        '--population', type=str, required=True,
+        help='path to the population raster')
+    parser.add_argument(
+        '--reefs', type=str, required=True,
+        help='path to the reefs raster')
+    parser.add_argument(
+        '--mangroves_forest', type=str, required=True,
+        help='path to the mangroves_forest raster')
+    parser.add_argument(
+        '--saltmarsh_wetland', type=str, required=True,
+        help='path to the saltmarsh_wetland raster')
+    parser.add_argument(
+        '--seagrass', type=str, required=True,
+        help='path to the seagrass raster')
+    parser.add_argument(
+        '--shrub', type=str, required=True,
+        help='path to the shrub raster')
+    parser.add_argument(
+        '--sparse', type=str, required=True,
+        help='path to the sparse raster')
+    parser.add_argument(
+        '--prefix', type=str, required=True,
+        help='path to the output prefix')
+    args = parser.parse_args()
+
+    hab_layers = {
+        'reefs': (args.reefs, 2000.0),
+        'mangroves_forest': (args.mangroves_forest, 2000.1),
+        'saltmarsh_wetland': (args.saltmarsh_wetland, 1000.0),
+        'seagrass': (args.seagrass, 500.0),
+        'shrub': (args.shrub, 2000.01),
+        'sparse': (args.sparse, 500.01),
+        }
+
+    workspace_dir = f'workspace_{args.prefix}'
+    churn_dir = os.path.join(workspace_dir, 'churn')
+
+    for dir_path in [churn_dir, workspace_dir]:
+        os.makedirs(dir_path, exist_ok=True)
+
+    task_graph = taskgraph.TaskGraph(
+        workspace_dir, multiprocessing.cpu_count(), 15.0)
     task_graph.add_task()
- 
-    pop_aligned_raster_path = os.path.join(CHURN_DIR, "pop_aligned.tif")
+
+    pop_aligned_raster_path = os.path.join(churn_dir, "pop_aligned.tif")
 
     hab_warp_task = task_graph.add_task(
         func=warp_by_area,
         args=(
-            POP_RASTER_PATH, TARGET_PIXEL_SIZE, pop_aligned_raster_path),
+            churn_dir, args.population, TARGET_PIXEL_SIZE,
+            pop_aligned_raster_path),
         target_path_list=[pop_aligned_raster_path],
         task_name=f'align and resample {pop_aligned_raster_path}')
     hab_warp_task.join()
-    pop_raster_info = pygeoprocessing.get_raster_info(pop_aligned_raster_path)
+    pop_raster_info = geoprocessing.get_raster_info(pop_aligned_raster_path)
 
     hab_coverage_task_list = []
     hab_raster_path_list = []
@@ -291,14 +270,14 @@ def main():
     pop_coverage_on_raster_list = []
     hab_pop_coverage_task_list = []
     hab_mask_cover_path_list = []
-    for hab_key, (unaligned_hab_raster_path, prot_dist) in HAB_LAYERS.items():
+    for hab_key, (unaligned_hab_raster_path, prot_dist) in hab_layers.items():
         hab_raster_path = os.path.join(
-            CHURN_DIR, '%s_aligned%s' % os.path.splitext(os.path.basename(
+            churn_dir, '%s_aligned%s' % os.path.splitext(os.path.basename(
                 unaligned_hab_raster_path)))
         # align the habitat to the population using max so we get all the
         # high to low resolution pixel coverage
         hab_warp_task = task_graph.add_task(
-            func=pygeoprocessing.warp_raster,
+            func=geoprocessing.warp_raster,
             args=(
                 unaligned_hab_raster_path, TARGET_PIXEL_SIZE,
                 hab_raster_path, 'max'),
@@ -310,7 +289,7 @@ def main():
 
         pixel_size_degree = TARGET_PIXEL_SIZE[0]
         kernel_raster_path = os.path.join(
-            CHURN_DIR, f'{hab_key}_{prot_dist}_kernel.tif')
+            churn_dir, f'{hab_key}_{prot_dist}_kernel.tif')
 
         # this convolution is a flat disk and picks up partial pixels right
         # on the edges of the circle
@@ -324,9 +303,9 @@ def main():
         # project habitat coverage out the distance that it should cover
         # the values don't matter here just the coverage
         hab_mask_cover_raster_path = os.path.join(
-            CHURN_DIR, f'{hab_key}_coverage.tif')
+            churn_dir, f'{hab_key}_coverage.tif')
         hab_coverage_task = task_graph.add_task(
-            func=pygeoprocessing.convolve_2d,
+            func=geoprocessing.convolve_2d,
             args=(
                 (hab_raster_path, 1), (kernel_raster_path, 1),
                 hab_mask_cover_raster_path),
@@ -342,9 +321,9 @@ def main():
         # project population out the distance that habitat protects so we
         # can see where the population will intersect with the habitat
         hab_pop_coverage_raster_path = os.path.join(
-            CHURN_DIR, f'{hab_key}_pop_coverage.tif')
+            churn_dir, f'{hab_key}_pop_coverage.tif')
         pop_coverage_task = task_graph.add_task(
-            func=pygeoprocessing.convolve_2d,
+            func=geoprocessing.convolve_2d,
             args=(
                 (pop_aligned_raster_path, 1), (kernel_raster_path, 1),
                 hab_pop_coverage_raster_path),
@@ -358,9 +337,9 @@ def main():
         # where each pixel represents the number of people within protective
         # distance
         pop_coverage_on_hab_raster_path = os.path.join(
-            WORKSPACE_DIR, f'{hab_key}_pop_on_hab.tif')
+            args.workspace_dir, f'{hab_key}_pop_on_hab.tif')
         hab_mask_pop_task = task_graph.add_task(
-            func=pygeoprocessing.raster_calculator,
+            func=geoprocessing.raster_calculator,
             args=(
                 [(hab_raster_path, 1), (hab_pop_coverage_raster_path, 1)],
                 _mask_op, pop_coverage_on_hab_raster_path,
@@ -374,9 +353,9 @@ def main():
 
     # combine all the hab coverages into one big raster for total coverage
     total_hab_mask_raster_path = os.path.join(
-        CHURN_DIR, 'total_hab_mask_coverage.tif')
+        churn_dir, 'total_hab_mask_coverage.tif')
     total_hab_mask_task = task_graph.add_task(
-        func=pygeoprocessing.raster_calculator,
+        func=geoprocessing.raster_calculator,
         args=(
             hab_mask_cover_path_list, _union_op, total_hab_mask_raster_path,
             gdal.GDT_Byte, 0),
@@ -387,9 +366,9 @@ def main():
     # mask the population raster by the total hab coverage, this shows
     # how many total people are protected by any habitat
     affected_pop_raster_path = os.path.join(
-        CHURN_DIR, 'affected_population.tif')
+        churn_dir, 'affected_population.tif')
     total_affectd_pop_task = task_graph.add_task(
-        func=pygeoprocessing.raster_calculator,
+        func=geoprocessing.raster_calculator,
         args=(
             [(total_hab_mask_raster_path, 1), (pop_aligned_raster_path, 1)],
             _mask_op, affected_pop_raster_path, gdal.GDT_Float32, -1),
@@ -408,9 +387,9 @@ def main():
     # calculate the total number of people protected by each habitat pixel
     # all together
     total_pop_coverage_raster_path = os.path.join(
-        CHURN_DIR, 'total_pop_coverage_on_hab.tif')
+        churn_dir, 'total_pop_coverage_on_hab.tif')
     total_pop_coverage_mask_task = task_graph.add_task(
-        func=pygeoprocessing.raster_calculator,
+        func=geoprocessing.raster_calculator,
         args=(
             pop_coverage_on_raster_list, _sum_rasters_op,
             total_pop_coverage_raster_path, gdal.GDT_Float32, -1),
@@ -429,9 +408,9 @@ def main():
     # normalize the total population on habitat by the sum of total people
     # protected / sum of total pop hab mask layer
     norm_total_pop_hab_mask_raster_path = os.path.join(
-        CHURN_DIR, 'norm_total_pop_hab_mask_coverage.tif')
+        churn_dir, 'norm_total_pop_hab_mask_coverage.tif')
     norm_total_pop_hab_mask_task = task_graph.add_task(
-        func=pygeoprocessing.raster_calculator,
+        func=geoprocessing.raster_calculator,
         args=([
             (total_pop_coverage_raster_path, 1),
             (sum_mask_pop_task.get()/sum_hab_mask_pop_task.get(), 'raw')],
@@ -439,7 +418,7 @@ def main():
             gdal.GDT_Float32, -1),
         dependent_task_list=[total_pop_coverage_mask_task],
         target_path_list=[norm_total_pop_hab_mask_raster_path],
-        task_name=f'normalize final pop coverage')
+        task_name=f'normalize final pop coverage {norm_total_pop_hab_mask_raster_path}')
 
     task_graph.join()
     task_graph.close()
