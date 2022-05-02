@@ -331,7 +331,7 @@ def main():
         # where each pixel represents the number of people within protective
         # distance
         pop_coverage_on_hab_raster_path = os.path.join(
-            args.workspace_dir, f'{hab_key}_pop_on_hab.tif')
+            workspace_dir, f'{hab_key}_pop_on_hab.tif')
         hab_mask_pop_task = task_graph.add_task(
             func=geoprocessing.raster_calculator,
             args=(
